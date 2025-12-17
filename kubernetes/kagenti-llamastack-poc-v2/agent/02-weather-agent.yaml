@@ -1,0 +1,61 @@
+# Weather Agent - Agent CR
+# Deploys the weather A2A agent using LlamaStack for LLM inference
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: weather-service
+  # namespace: set by script
+  labels:
+    app.kubernetes.io/name: weather-service
+    kagenti.io/protocol: a2a
+    kagenti.io/agent-protocol: a2a
+    kagenti.io/type: agent
+    kagenti.io/framework: LangGraph
+  annotations:
+    description: "Weather service agent using LlamaStack"
+spec:
+  description: "Agent that processes weather data using LlamaStack LLM"
+  replicas: 1
+
+  # Reference the AgentBuild for image source
+  imageSource:
+    buildRef:
+      name: weather-service-build
+
+  podTemplateSpec:
+    spec:
+      containers:
+      - name: agent
+        env:
+        - name: PORT
+          value: "8000"
+        - name: HOST
+          value: "0.0.0.0"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector.kagenti-system.svc.cluster.local:8335"
+        - name: KEYCLOAK_URL
+          value: "http://keycloak.keycloak.svc.cluster.local:8080"
+        - name: UV_CACHE_DIR
+          value: "/app/.cache/uv"
+        # LLM_API_BASE, LLM_MODEL, LLM_API_KEY, MCP_URL set by script
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - mountPath: /app/.cache
+          name: cache
+        - mountPath: /.marvin
+          name: marvin
+      volumes:
+      - name: cache
+        emptyDir: {}
+      - name: marvin
+        emptyDir: {}

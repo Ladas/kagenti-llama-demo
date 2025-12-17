@@ -1,0 +1,16 @@
+# RBAC for Kagenti UI access to agent namespace
+# Allows the Kagenti UI to manage agents and tools in this namespace
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kagenti-ui-access
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+subjects:
+- kind: ServiceAccount
+  name: kagenti-ui
+  namespace: kagenti-system

@@ -1,0 +1,32 @@
+# Weather Tool - MCPServer CR (Toolhive)
+# Deploys the weather MCP tool via Toolhive operator
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: weather-tool
+  # namespace: set by script
+  labels:
+    app.kubernetes.io/created-by: llamastack-poc
+    kagenti.io/framework: Python
+    kagenti.io/protocol: mcp
+    kagenti.io/type: tool
+spec:
+  # image set by script with envsubst
+  image: "image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/weather-tool:v0.0.1"
+  transport: streamable-http
+  env:
+    - name: PORT
+      value: "8080"
+    - name: HOST
+      value: "0.0.0.0"
+    - name: UV_NO_CACHE
+      value: "1"
+    - name: HOME
+      value: "/tmp"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 50m
+      memory: 128Mi

@@ -1,0 +1,20 @@
+# Namespace Configuration
+# Creates and labels namespace for Kagenti agent deployment
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    kagenti-enabled: "true"
+---
+# GitHub Token Secret (for public repos, no real token needed)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-token-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  user: kagenti
+  token: public-repo-no-token-needed
