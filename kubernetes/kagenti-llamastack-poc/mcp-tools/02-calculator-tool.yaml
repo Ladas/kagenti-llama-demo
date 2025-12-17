@@ -1,0 +1,144 @@
+# Calculator MCP Tool - provides math operations and unit conversions
+# Apply with: oc apply -f 02-calculator-tool.yaml
+# Start build: oc start-build calculator-tool-build -n team2 --follow
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: calculator-tool
+  namespace: team2
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: calculator-tool-build
+  namespace: team2
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM python:3.12-slim
+      
+      WORKDIR /app
+      
+      RUN pip install --no-cache-dir fastmcp
+      
+      COPY <<'SCRIPT' /app/calculator_tool.py
+      """Calculator MCP tool - performs basic math operations"""
+      import os
+      import math
+      import logging
+      import sys
+      from fastmcp import FastMCP
+
+      mcp = FastMCP("Calculator")
+      logger = logging.getLogger(__name__)
+      logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), stream=sys.stdout)
+
+      @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True})
+      def calculate(expression: str) -> str:
+          """Evaluate a mathematical expression. Supports +, -, *, /, ^, sqrt, sin, cos, tan, log.
+          Examples: '2+2', '10*5', 'sqrt(16)', 'sin(3.14159/2)'"""
+          try:
+              # Safe evaluation with math functions
+              safe_dict = {
+                  "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
+                  "tan": math.tan, "log": math.log, "log10": math.log10,
+                  "pi": math.pi, "e": math.e, "abs": abs, "pow": pow,
+              }
+              # Replace ^ with ** for exponents
+              expr = expression.replace("^", "**")
+              result = eval(expr, {"__builtins__": {}}, safe_dict)
+              return f"Result: {result}"
+          except Exception as e:
+              return f"Error: {str(e)}"
+
+      @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True})
+      def convert_units(value: float, from_unit: str, to_unit: str) -> str:
+          """Convert between common units.
+          Supported: km/miles, kg/lbs, celsius/fahrenheit, meters/feet"""
+          conversions = {
+              ("km", "miles"): lambda x: x * 0.621371,
+              ("miles", "km"): lambda x: x * 1.60934,
+              ("kg", "lbs"): lambda x: x * 2.20462,
+              ("lbs", "kg"): lambda x: x / 2.20462,
+              ("celsius", "fahrenheit"): lambda x: (x * 9/5) + 32,
+              ("fahrenheit", "celsius"): lambda x: (x - 32) * 5/9,
+              ("meters", "feet"): lambda x: x * 3.28084,
+              ("feet", "meters"): lambda x: x / 3.28084,
+          }
+          key = (from_unit.lower(), to_unit.lower())
+          if key in conversions:
+              result = conversions[key](value)
+              return f"{value} {from_unit} = {result:.2f} {to_unit}"
+          return f"Conversion from {from_unit} to {to_unit} not supported"
+
+      def run_server():
+          transport = os.getenv("MCP_TRANSPORT", "streamable-http")
+          host = os.getenv("HOST", "0.0.0.0")
+          port = int(os.getenv("PORT", "8000"))
+          mcp.run(transport=transport, host=host, port=port)
+
+      if __name__ == "__main__":
+          run_server()
+      SCRIPT
+      
+      RUN chown -R 1001:1001 /app
+      USER 1001
+      
+      CMD ["python", "calculator_tool.py"]
+  strategy:
+    type: Docker
+  output:
+    to:
+      kind: ImageStreamTag
+      name: calculator-tool:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calculator-tool
+  namespace: team2
+  labels:
+    app: calculator-tool
+    kagenti.io/type: tool
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: calculator-tool
+  template:
+    metadata:
+      labels:
+        app: calculator-tool
+        kagenti.io/type: tool
+    spec:
+      containers:
+      - name: mcp-server
+        image: image-registry.openshift-image-registry.svc:5000/team2/calculator-tool:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: MCP_TRANSPORT
+          value: "streamable-http"
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "8000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: calculator-tool
+  namespace: team2
+  labels:
+    app: calculator-tool
+spec:
+  selector:
+    app: calculator-tool
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+

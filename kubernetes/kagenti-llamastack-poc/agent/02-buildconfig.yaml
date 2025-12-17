@@ -1,0 +1,42 @@
+# BuildConfig for the agent (with upgraded langchain-mcp-adapters)
+# Apply with: oc apply -f 02-buildconfig.yaml
+# Start build: oc start-build llama-stack-agent-build -n team2 --follow
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: llama-stack-agent-build
+  namespace: team2
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+      
+      WORKDIR /app
+      
+      # Clone the generic_agent from kagenti/agent-examples
+      RUN apt-get update && apt-get install -y git && \
+          git clone --depth 1 https://github.com/kagenti/agent-examples.git /tmp/repo && \
+          cp -r /tmp/repo/a2a/generic_agent/* /app/ && \
+          rm -rf /tmp/repo && \
+          apt-get remove -y git && apt-get autoremove -y
+      
+      # Upgrade langchain-mcp-adapters to fix MCP connectivity
+      RUN sed -i 's/langchain-mcp-adapters>=0.1.0/langchain-mcp-adapters>=0.2.1/' pyproject.toml && \
+          rm -f uv.lock && \
+          uv sync --no-cache
+      
+      ENV PRODUCTION_MODE=True
+      
+      RUN chown -R 1001:1001 /app
+      USER 1001
+      
+      CMD ["uv", "run", "--no-sync", "server"]
+  strategy:
+    type: Docker
+  output:
+    to:
+      kind: ImageStreamTag
+      name: llama-stack-agent:latest
+

@@ -1,0 +1,9 @@
+# ImageStream for the agent
+# Apply with: oc apply -f 01-imagestream.yaml
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: llama-stack-agent
+  namespace: team2
+

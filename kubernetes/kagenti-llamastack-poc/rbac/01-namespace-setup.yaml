@@ -1,0 +1,12 @@
+# Namespace setup and Istio label removal
+# Apply with: oc apply -f 01-namespace-setup.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team2
+  labels:
+    # Explicitly NOT setting istio.io/dataplane-mode or istio.io/use-waypoint
+    # to avoid ambient mode routing issues
+    kubernetes.io/metadata.name: team2
+

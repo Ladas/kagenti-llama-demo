@@ -1,0 +1,88 @@
+# MCPServer CRs for Tool Catalog visibility (optional)
+# These register tools with Kagenti's MCP Gateway
+# Apply with: oc apply -f 03-mcpserver-crs.yaml
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: weather-tool-route
+  namespace: team2
+  labels:
+    app: weather-tool
+    kagenti.io/type: tool
+spec:
+  parentRefs:
+    - name: mcp-gateway
+      namespace: gateway-system
+      kind: Gateway
+  hostnames:
+    - "weather-tool.team2.svc.cluster.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp
+      backendRefs:
+        - name: weather-tool
+          port: 8000
+---
+apiVersion: mcp.kagenti.com/v1alpha1
+kind: MCPServer
+metadata:
+  name: weather-tool
+  namespace: team2
+  labels:
+    app: weather-tool
+    kagenti.io/type: tool
+    kagenti.io/protocol: mcp
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: weather-tool-route
+    namespace: team2
+  path: /mcp
+  toolPrefix: weather_
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: calculator-tool-route
+  namespace: team2
+  labels:
+    app: calculator-tool
+    kagenti.io/type: tool
+spec:
+  parentRefs:
+    - name: mcp-gateway
+      namespace: gateway-system
+      kind: Gateway
+  hostnames:
+    - "calculator-tool.team2.svc.cluster.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp
+      backendRefs:
+        - name: calculator-tool
+          port: 8000
+---
+apiVersion: mcp.kagenti.com/v1alpha1
+kind: MCPServer
+metadata:
+  name: calculator-tool
+  namespace: team2
+  labels:
+    app: calculator-tool
+    kagenti.io/type: tool
+    kagenti.io/protocol: mcp
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: calculator-tool-route
+    namespace: team2
+  path: /mcp
+  toolPrefix: calc_
+

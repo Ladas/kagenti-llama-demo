@@ -1,0 +1,87 @@
+# Weather MCP Tool - provides real-time weather data
+# Apply with: oc apply -f 01-weather-tool.yaml
+# Start build: oc start-build weather-tool-build -n team2 --follow
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: weather-tool
+  namespace: team2
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: weather-tool-build
+  namespace: team2
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/kagenti/agent-examples
+      ref: main
+    contextDir: mcp/weather_tool
+  strategy:
+    type: Docker
+  output:
+    to:
+      kind: ImageStreamTag
+      name: weather-tool:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-tool
+  namespace: team2
+  labels:
+    app: weather-tool
+    kagenti.io/type: tool
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: weather-tool
+  template:
+    metadata:
+      labels:
+        app: weather-tool
+        kagenti.io/type: tool
+    spec:
+      containers:
+      - name: mcp-server
+        image: image-registry.openshift-image-registry.svc:5000/team2/weather-tool:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: MCP_TRANSPORT
+          value: "streamable-http"
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "8000"
+        - name: UV_CACHE_DIR
+          value: "/tmp/.cache/uv"
+        - name: HOME
+          value: "/tmp"
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weather-tool
+  namespace: team2
+  labels:
+    app: weather-tool
+spec:
+  selector:
+    app: weather-tool
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+

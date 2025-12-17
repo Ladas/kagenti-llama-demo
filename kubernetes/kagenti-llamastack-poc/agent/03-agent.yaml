@@ -1,0 +1,49 @@
+# Kagenti Agent CR for LlamaStack integration
+# Apply with: oc apply -f 03-agent.yaml
+---
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: llama-stack-agent
+  namespace: team2
+  labels:
+    kagenti.io/type: agent
+    kagenti.io/protocol: a2a
+spec:
+  description: "Generic Agent connected to LlamaStack (Llama 3.2 3B) - Kevin's POC"
+  imageSource:
+    image: image-registry.openshift-image-registry.svc:5000/team2/llama-stack-agent:latest
+  labels:
+    kagenti.io/type: agent
+    kagenti.io/protocol: a2a
+  podTemplateSpec:
+    spec:
+      containers:
+      - name: agent
+        env:
+        # LlamaStack Configuration
+        - name: LLM_MODEL
+          value: "vllm-inference/llama32-3b"
+        - name: LLM_API_BASE
+          value: "http://lsd-llama32-3b-service.serving.svc.cluster.local:8321/v1"
+        - name: LLM_API_KEY
+          value: "dummy"
+        # MCP Tools (add after deploying mcp-tools)
+        # NOTE: You need to patch the deployment after applying this
+        # See scripts/04-patch-mcp-urls.sh
+        - name: MCP_URLS
+          value: ""
+        - name: MCP_TRANSPORT
+          value: "streamable_http"
+        # Cache directories (required for OpenShift)
+        - name: UV_CACHE_DIR
+          value: "/tmp/.cache/uv"
+        - name: HOME
+          value: "/tmp"
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+
