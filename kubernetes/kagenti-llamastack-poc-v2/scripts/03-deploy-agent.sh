@@ -54,8 +54,9 @@ WEATHER_SA=$(oc get deployment weather-service -n $NAMESPACE -o jsonpath='{.spec
 echo "Granting privileged SCC to $WEATHER_SA..."
 oc adm policy add-scc-to-user privileged -z "$WEATHER_SA" -n $NAMESPACE 2>/dev/null || true
 
-# Fix service port
-echo "Patching service port..."
+# Fix service port (workaround until kagenti-operator is updated)
+# The operator creates services with port 8080, but A2A agents listen on 8000
+echo "Patching service port to 8000..."
 oc patch svc weather-service -n $NAMESPACE --type='json' -p='[
     {"op": "replace", "path": "/spec/ports/0/port", "value": 8000},
     {"op": "replace", "path": "/spec/ports/0/targetPort", "value": 8000}

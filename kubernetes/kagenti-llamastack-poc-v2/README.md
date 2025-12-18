@@ -72,15 +72,15 @@ LLAMA_NAMESPACE="serving"
 oc get ns $LLAMA_NAMESPACE || oc create ns $LLAMA_NAMESPACE
 
 # Deploy vLLM InferenceService
-oc apply -n $LLAMA_NAMESPACE -f ../llama3.2-3b/oci-data-connection.yaml
-oc apply -n $LLAMA_NAMESPACE -f ../llama3.2-3b/servingruntime.yaml
-oc apply -n $LLAMA_NAMESPACE -f ../llama3.2-3b/inferenceservice.yaml
+oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama3.2-3b/oci-data-connection.yaml
+oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama3.2-3b/servingruntime.yaml
+oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama3.2-3b/inferenceservice.yaml
 
 # Wait for InferenceService to be ready (may take 5-10 minutes for model download)
 oc wait --for=condition=Ready inferenceservice/llama32-3b -n $LLAMA_NAMESPACE --timeout=600s
 
 # Deploy LlamaStackDistribution
-oc apply -n $LLAMA_NAMESPACE -f ../llama-stack-dist/llama.yaml
+oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama-stack-dist/llama.yaml
 
 # Verify LlamaStack is running
 oc get llsd -n $LLAMA_NAMESPACE
@@ -191,37 +191,209 @@ kagenti-llamastack-poc-v2/
 
 ## Architecture
 
+### Request Flow Overview
+
+When a user asks "What is the weather in Seattle?", the following sequence occurs:
+
+1. **User sends request** via Kagenti UI (or direct API call)
+2. **Kagenti UI** sends A2A JSON-RPC request to the Weather Agent
+3. **Weather Agent** calls LlamaStack with the user's question
+4. **LlamaStack** forwards to vLLM (running Llama 3.2 3B on GPU)
+5. **LLM responds** with a tool_call to get weather data
+6. **Weather Agent** calls the Weather Tool via MCP protocol (through Toolhive proxy)
+7. **Weather Tool** fetches real weather data and returns it
+8. **Weather Agent** sends the tool result back to LLM
+9. **LLM generates** final natural language response
+10. **Response flows back** through UI to user
+
+All pod-to-pod communication within the mesh is encrypted via **Istio Ambient ztunnel** (transparent mTLS).
+
+### Platform Architecture
+
+On OpenShift AI, there are **two Istio deployments** with shared CA trust:
+
 ```mermaid
 flowchart TB
+    subgraph external["External Access"]
+        User[User/Client]
+        Route[OpenShift Route]
+    end
+
     subgraph kagenti-system["kagenti-system namespace"]
         UI[Kagenti UI]
         Operator[Kagenti Operator]
+        Phoenix[Phoenix Traces]
+        OTel[OTEL Collector]
+        Keycloak[Keycloak]
     end
 
-    subgraph team1["team1 namespace"]
-        Agent[Weather Agent<br/>A2A Protocol]
-        Tool[Weather Tool<br/>MCP Protocol]
+    subgraph ambient["Kagenti Istio — Ambient Mode"]
+        subgraph team1["team1 namespace"]
+            Agent[Weather Agent]
+            ToolhiveProxy[Toolhive Proxy]
+            Tool[Weather Tool]
+        end
     end
 
-    subgraph serving["serving namespace"]
-        LlamaStack[LlamaStack<br/>Llama 3.2 3B]
-        vLLM[vLLM<br/>InferenceService]
+    subgraph sidecar["OpenShift AI Istio — Sidecar Mode"]
+        subgraph serving["serving namespace"]
+            LlamaStack[LlamaStack]
+            vLLM[vLLM + GPU]
+        end
     end
 
-    UI -->|"A2A JSON-RPC"| Agent
-    Agent -->|"OpenAI API"| LlamaStack
-    LlamaStack --> vLLM
-    Agent -->|"MCP streamable-http"| Tool
-    Operator -->|"Creates"| Agent
-    Operator -->|"Creates"| Tool
+    %% User request flow
+    User -->|"HTTPS"| Route
+    Route -->|"HTTP forward"| UI
+    UI <-->|"A2A JSON-RPC"| Agent
+
+    %% Agent to LLM (cross-mesh via shared CA)
+    Agent <-->|"OpenAI API"| LlamaStack
+    LlamaStack <-->|"model inference"| vLLM
+
+    %% Agent to Tool
+    Agent <-->|"MCP request"| ToolhiveProxy
+    ToolhiveProxy <-->|"tool invocation"| Tool
+
+    %% Management plane
+    Operator -.->|"manages lifecycle"| Agent
+    Operator -.->|"manages lifecycle"| Tool
+
+    %% Observability
+    Agent -.->|"OTLP traces"| OTel
+    OTel -.->|"stores traces"| Phoenix
+
+    %% Authentication
+    UI -.->|"OAuth2 login"| Keycloak
 ```
 
-**Data Flow:**
-1. User interacts with **Kagenti UI** or sends A2A requests directly
-2. **Weather Agent** receives task and calls **LlamaStack** for LLM inference
-3. LlamaStack uses **vLLM** to run Llama 3.2 3B on GPU
-4. Agent calls **Weather Tool** via MCP when LLM requests tool use
-5. Agent returns response to user
+### Security Layers
+
+On OpenShift AI, two Istio service meshes coexist with shared CA trust:
+
+| Layer | Component | Mode | Namespaces | Purpose |
+|-------|-----------|------|------------|---------|
+| **Kagenti Mesh** | Istio Ambient (ztunnel) | Ambient | team1, kagenti-system | Transparent mTLS for agents/tools |
+| **OpenShift AI Mesh** | Istio (KServe) | Sidecar | serving | mTLS for LlamaStack/vLLM inference |
+| **Cross-mesh Trust** | Shared CA | — | All | CA copied from openshift-gateway to Kagenti istiod |
+| **Workload Identity** | SPIRE/SPIFFE | — | team1 | JWT tokens for OAuth2, X.509 for cross-cluster auth |
+| **User Authentication** | Keycloak | — | External | OAuth2/OIDC login for UI and API clients |
+
+**Ambient vs Sidecar mode:**
+
+| Aspect | Ambient (Kagenti) | Sidecar (OpenShift AI) |
+|--------|-------------------|------------------------|
+| **Proxy location** | Node-level ztunnel DaemonSet | Pod-level Envoy sidecar |
+| **Resource overhead** | Lower (shared per node) | Higher (per pod) |
+| **Used by** | Agents, tools, platform | LlamaStack, vLLM, KServe |
+
+**Why two meshes?** OpenShift AI pre-installs Istio for KServe model serving. Kagenti deploys its own Istio in ambient mode. The Kagenti installer copies the OpenShift Gateway CA to enable cross-mesh mTLS trust.
+
+### SPIFFE Identity Provisioning
+
+When pods start, the `spiffe-helper` sidecar obtains identity credentials from SPIRE and writes them to the filesystem. The agent application can then use these for:
+- **JWT SVID** (`/opt/jwt_svid.token`): OAuth2 client authentication with Keycloak
+- **X.509 SVID** (`/opt/svid.pem`): Client certificate authentication with external services
+
+**How it works in this deployment**:
+
+1. **Agent registration**: When the agent pod starts, the `kagenti-client-registration` sidecar reads the JWT SVID, extracts the SPIFFE identity (subject claim), and registers the agent as an OAuth2 client in Keycloak.
+
+2. **UI → Agent authentication**: When a user logs into the Kagenti UI, they authenticate via OAuth2 and receive an access token. When the UI calls an agent, it passes this token in the `Authorization: Bearer <token>` header. The agent (as a registered Keycloak client) can validate the token.
+
+3. **X.509 certificates**: Provisioned but not actively used in this single-cluster POC. They would enable cross-cluster agent-to-agent authentication in multi-cluster deployments.
+
+```mermaid
+sequenceDiagram
+    participant Pod as Agent/Tool Pod
+    participant Helper as spiffe-helper sidecar
+    participant SpireAgent as SPIRE Agent (DaemonSet)
+    participant Server as SPIRE Server
+
+    Pod->>Helper: container starts
+    Helper->>SpireAgent: connect via workload API socket
+    SpireAgent->>Server: request identity for workload
+    Server-->>SpireAgent: issue X.509 SVID + JWT SVID
+    SpireAgent-->>Helper: deliver identity credentials
+    Helper->>Pod: write certs to /opt/svid.pem, /opt/jwt_svid.token
+
+    loop Automatic Rotation
+        SpireAgent->>Server: renew before expiry
+        Server-->>SpireAgent: fresh credentials
+        SpireAgent-->>Helper: updated SVIDs
+        Helper->>Pod: overwrite cert files
+    end
+```
+
+### Istio CA Sharing (OpenShift AI)
+
+On OpenShift AI clusters with pre-existing Istio (`openshift-gateway`), both control planes create CA ConfigMaps. The Kagenti installer copies the OpenShift Gateway CA to avoid conflicts:
+
+```mermaid
+flowchart LR
+    subgraph openshift-ingress["openshift-ingress namespace"]
+        OGCA[istio-ca-secret]
+    end
+
+    subgraph istio-system["istio-system namespace"]
+        KagentiCA[istio-ca-secret]
+        Istiod[istiod]
+    end
+
+    subgraph namespaces["All Namespaces"]
+        CM[istio-ca-root-cert ConfigMap]
+    end
+
+    OGCA -->|"copy CA secret"| KagentiCA
+    KagentiCA -->|"restart to load"| Istiod
+    Istiod -->|"create matching ConfigMap"| CM
+```
+
+**Result:** Both istiods create identical CA ConfigMaps, preventing certificate validation errors.
+
+---
+
+### MCP Gateway Architecture (Alternative Mode)
+
+> **Note:** MCP Gateway is not working on OpenShift AI due to EnvoyFilter namespace isolation (see [Known Issue #3](#3-mcp-gateway-envoyfilter-not-applied-on-openshift-ai)). This POC uses direct Toolhive communication instead.
+
+When `USE_MCP_GATEWAY=true`, agents route MCP requests through a centralized gateway:
+
+```mermaid
+flowchart LR
+    subgraph team1["team1"]
+        Agent[Agent]
+        Tool[Tool]
+    end
+
+    subgraph gateway["MCP Gateway"]
+        Gateway[Istio Gateway + ext_proc]
+        Broker[MCP Broker]
+    end
+
+    Agent <-->|"MCP JSON-RPC"| Gateway
+    Gateway <-->|"gRPC"| Broker
+    Broker <-->|"route to tool"| Tool
+
+    Tool -.->|"registers via MCPServer CR"| Broker
+```
+
+**Issue on OpenShift AI:** The `ext_proc` EnvoyFilter in `istio-system` doesn't apply to gateway pods in `gateway-system` due to namespace isolation.
+
+**Workaround:** Agents connect directly to Toolhive proxy (`mcp-weather-tool-proxy:8080`).
+
+---
+
+### Data Flow Comparison
+
+| Mode | Tool Routing | Status |
+|------|--------------|--------|
+| **Direct Toolhive** | Agent → Toolhive Proxy → Tool | Current (working) |
+| **MCP Gateway** | Agent → Gateway → Broker → Tool | Not working on OpenShift AI |
+
+**Direct Toolhive Mode** (current): Each tool has a Toolhive proxy sidecar. Agents connect directly to the tool's proxy service.
+
+**MCP Gateway Mode**: All MCP requests route through a centralized gateway with ext_proc filter. Not working on OpenShift AI due to EnvoyFilter namespace isolation (see Known Issue #3).
 
 ## Configuration Options
 
@@ -356,19 +528,7 @@ The following issues require workarounds when deploying on OpenShift. The workar
 
 ---
 
-### 5. Service port mismatch
-
-**Problem:** kagenti-operator creates services with port 8080 but Agent spec defines `containerPort: 8000`.
-
-**Workaround:** Patch services to use port 8000.
-
-**Fix:** [kagenti-operator](https://github.com/kagenti/kagenti-operator) should read `containerPort` from Agent spec when creating services.
-
-**Reference:** [`scripts/03-deploy-agent.sh`](scripts/03-deploy-agent.sh#L59-L62)
-
----
-
-### 6. Environment variables not propagated
+### 5. Environment variables not propagated
 
 **Problem:** kagenti-operator doesn't propagate environment variables from Agent CR to the deployment, and doesn't update existing deployments when Agent CR changes.
 
@@ -380,7 +540,7 @@ The following issues require workarounds when deploying on OpenShift. The workar
 
 ---
 
-### 7. Hardcoded resource requests
+### 6. Hardcoded resource requests
 
 **Problem:** kagenti-operator creates deployments with hardcoded CPU/memory requests that may exceed cluster capacity.
 
@@ -392,7 +552,7 @@ The following issues require workarounds when deploying on OpenShift. The workar
 
 ---
 
-### 8. Istio CA conflicts on OpenShift AI
+### 7. Istio CA conflicts on OpenShift AI
 
 **Problem:** OpenShift AI clusters have pre-existing Istio (openshift-gateway) that creates conflicting `istio-ca-root-cert` ConfigMaps.
 
@@ -401,6 +561,18 @@ The following issues require workarounds when deploying on OpenShift. The workar
 **Fix:** Implement proper multi-mesh trust via [Istio deployment models](https://istio.io/latest/docs/ops/deployment/deployment-models/).
 
 **Reference:** This is handled at platform installation time, not in this POC. See [Kagenti Ansible Installer](https://github.com/kagenti/kagenti/tree/main/deployments/ansible).
+
+---
+
+### 8. Service port mismatch
+
+**Problem:** kagenti-operator creates Services with port 8080, but A2A agents listen on port 8000.
+
+**Workaround:** Scripts patch the Service to use port 8000.
+
+**Fix:** Already fixed in [kagenti-operator source](https://github.com/kagenti/kagenti-operator/blob/main/internal/controller/agent_controller.go#L562) but not yet released.
+
+**Reference:** [`scripts/03-deploy-agent.sh`](scripts/03-deploy-agent.sh#L57-L63)
 
 ## Related Documentation
 
