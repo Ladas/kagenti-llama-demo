@@ -33,21 +33,41 @@ This guide takes you from a blank OpenShift AI cluster to a running agent.
 
 ---
 
-### Step 1: Install Kagenti Platform
+### Step 1: Deploy LlamaStack
+
+Deploy vLLM (GPU inference) + LlamaStack (OpenAI-compatible API wrapper).
+
+**Skip this step** if using OpenAI API instead (`SKIP_LLAMA=true` in Step 3).
+
+```bash
+./kubernetes/deploy-llamastack.sh
+```
+
+The script will:
+1. Check for GPU nodes or GPU machinesets (fails if none found)
+2. Install NVIDIA GPU Operator if not present
+3. Install OpenShift AI operator if not present (creates DataScienceCluster)
+4. Enable LlamaStack Operator in DataScienceCluster
+5. Deploy vLLM InferenceService + LlamaStackDistribution
+
+**LLM Endpoint**: `http://lsd-llama32-3b-service.serving.svc.cluster.local:8321/v1`
+---
+
+### Step 2: Install Kagenti Platform
 
 Follow the pre-requisities in [Openshift Installation](https://github.com/kagenti/kagenti/blob/main/docs/install.md#openshift-installation) then run the ansible installer like:
 
 ```bash
 # Clone the kagenti repo
 git clone https://github.com/kagenti/kagenti.git
-cd kagenti/deployments/ansible
+cd kagenti
 
 # Copy and configure values
-cp envs/ocp_values.yaml envs/my_cluster_values.yaml
+cp deployments/ansible/envs/ocp_values.yaml deployments/ansible/envs/my_cluster_values.yaml
 # Edit my_cluster_values.yaml with your cluster-specific settings
 
 # Run the installer
-./run-install.sh --env ocp
+./deployments/ansible/run-install.sh --env ocp
 ```
 
 After installation, verify the platform is running:
@@ -59,69 +79,34 @@ oc get pods -n mcp-system
 
 ---
 
-### Step 2: Deploy LlamaStack
-
-Deploy the Llama 3.2 3B model via vLLM and LlamaStack.
-
-**Prerequisites**: LlamaStack operator must be enabled in your DataScienceCluster.
-
-```bash
-LLAMA_NAMESPACE="serving"
-
-# Create serving namespace
-oc get ns $LLAMA_NAMESPACE || oc create ns $LLAMA_NAMESPACE
-
-# Deploy vLLM InferenceService
-oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama3.2-3b/oci-data-connection.yaml
-oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama3.2-3b/servingruntime.yaml
-oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama3.2-3b/inferenceservice.yaml
-
-# Wait for InferenceService to be ready (may take 5-10 minutes for model download)
-oc wait --for=condition=Ready inferenceservice/llama32-3b -n $LLAMA_NAMESPACE --timeout=600s
-
-# Deploy LlamaStackDistribution
-oc apply -n $LLAMA_NAMESPACE -f kubernetes/llama-stack-dist/llama.yaml
-
-# Verify LlamaStack is running
-oc get llsd -n $LLAMA_NAMESPACE
-oc get pods -n $LLAMA_NAMESPACE -l app.kubernetes.io/name=lsd-llama32-3b
-```
-
-**LLM Endpoint**: `http://lsd-llama32-3b-service.serving.svc.cluster.local:8321/v1`
-
----
-
 ### Step 3: Deploy Weather Agent and Tool
 
 Use the scripts to set up the weather agent with MCP tool:
 
 ```bash
-cd kubernetes/kagenti-llamastack-poc-v2/scripts
-chmod +x *.sh
-
 # 1. Setup namespace and permissions
-./01-setup.sh
+./kubernetes/kagenti-llamastack-poc-v2/scripts/01-setup.sh
 
 # 2. Build and deploy weather tool
-./02-deploy-tool.sh
+./kubernetes/kagenti-llamastack-poc-v2/scripts/02-deploy-tool.sh
 
 # 3. Build and deploy weather agent
-./03-deploy-agent.sh
+./kubernetes/kagenti-llamastack-poc-v2/scripts/03-deploy-agent.sh
 
 # 4. Test the deployment
-./04-test.sh
+./kubernetes/kagenti-llamastack-poc-v2/scripts/04-test.sh
 ```
 
 To deploy to a different namespace:
 ```bash
-NAMESPACE=team2 ./01-setup.sh
-NAMESPACE=team2 ./02-deploy-tool.sh
-NAMESPACE=team2 ./03-deploy-agent.sh
+NAMESPACE=team2 ./kubernetes/kagenti-llamastack-poc-v2/scripts/01-setup.sh
+NAMESPACE=team2 ./kubernetes/kagenti-llamastack-poc-v2/scripts/02-deploy-tool.sh
+NAMESPACE=team2 ./kubernetes/kagenti-llamastack-poc-v2/scripts/03-deploy-agent.sh
 ```
 
 To use OpenAI API instead of LlamaStack:
 ```bash
-SKIP_LLAMA=true ./03-deploy-agent.sh
+SKIP_LLAMA=true ./kubernetes/kagenti-llamastack-poc-v2/scripts/03-deploy-agent.sh
 
 # And replace the OpenAI key if key not valid
 kubectl delete secret openai-secret -n team1
@@ -466,10 +451,10 @@ Namespace: team1
 ## Cleanup
 
 ```bash
-./scripts/05-cleanup.sh
+./kubernetes/kagenti-llamastack-poc-v2/scripts/05-cleanup.sh
 
 # Or cleanup specific namespace
-NAMESPACE=team2 ./scripts/05-cleanup.sh
+NAMESPACE=team2 ./kubernetes/kagenti-llamastack-poc-v2/scripts/05-cleanup.sh
 ```
 
 ## Known Issues and TODOs
