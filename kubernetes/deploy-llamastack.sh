@@ -57,7 +57,12 @@ if ! oc get csv -n nvidia-gpu-operator 2>/dev/null | grep -q gpu-operator; then
     echo "Installing NFD and GPU operators..."
     oc create ns openshift-nfd 2>/dev/null || true
     oc create ns nvidia-gpu-operator 2>/dev/null || true
-    oc apply -f - <<'YAML'
+
+    # Create OperatorGroups only if none exist in the namespace
+    # OLM auto-creates OperatorGroups when Subscriptions are created, so we check first
+    # to avoid duplicates which can cause OLM resolution issues
+    if ! oc get operatorgroup -n openshift-nfd -o name 2>/dev/null | grep -q .; then
+        oc apply -f - <<'YAML'
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
@@ -66,7 +71,24 @@ metadata:
 spec:
   targetNamespaces:
     - openshift-nfd
----
+YAML
+    fi
+
+    if ! oc get operatorgroup -n nvidia-gpu-operator -o name 2>/dev/null | grep -q .; then
+        oc apply -f - <<'YAML'
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: nvidia-gpu-operator
+  namespace: nvidia-gpu-operator
+spec:
+  targetNamespaces:
+    - nvidia-gpu-operator
+YAML
+    fi
+
+    # Create Subscriptions
+    oc apply -f - <<'YAML'
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -77,15 +99,6 @@ spec:
   name: nfd
   source: redhat-operators
   sourceNamespace: openshift-marketplace
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: nvidia-gpu-operator
-  namespace: nvidia-gpu-operator
-spec:
-  targetNamespaces:
-    - nvidia-gpu-operator
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
@@ -278,19 +291,24 @@ echo "============================================================"
 
 if ! oc get csv -n redhat-ods-operator 2>/dev/null | grep -q Succeeded; then
     echo "Installing OpenShift AI operator..."
-    oc apply -f - <<'YAML'
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: redhat-ods-operator
----
+    oc create ns redhat-ods-operator 2>/dev/null || true
+
+    # Create OperatorGroup only if none exist in the namespace
+    # OLM auto-creates OperatorGroups when Subscriptions are created, so we check first
+    # to avoid duplicates which can cause OLM resolution issues
+    if ! oc get operatorgroup -n redhat-ods-operator -o name 2>/dev/null | grep -q .; then
+        oc apply -f - <<'YAML'
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
   name: rhods-operator
   namespace: redhat-ods-operator
 spec: {}
----
+YAML
+    fi
+
+    # Create Subscription
+    oc apply -f - <<'YAML'
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
